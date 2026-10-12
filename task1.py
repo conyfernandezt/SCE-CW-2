@@ -1,5 +1,19 @@
 import pandas as pd
 import numpy as np
+import matplotlib.pyplot as plt
+
+# dictionaries
+
+weekday_names = {
+    0: "Monday",
+    1: "Tuesday",
+    2: "Wednesday",
+    3: "Thursday",
+    4: "Friday",
+    5: "Saturday",
+    6: "Sunday"
+}
+
 
 df_sku = pd.read_csv("QF_Facility_SKU_Master.csv")
 df_lines = pd.read_csv("QF_Facility_Order_Lines.csv")
@@ -13,10 +27,12 @@ df_order["placement_timestamp"] = pd.to_datetime(
 df_order["order_date"] = (
     df_order["placement_timestamp"].dt.normalize()
 )
+df_order["weekday"] = df_order["placement_timestamp"].dt.dayofweek
+df_order["hour"] = df_order["placement_timestamp"].dt.hour
 
 # 2. Attach dates to order lines
 df_order_sku = df_lines.merge(
-    df_order[["order_id", "order_date"]],
+    df_order[["order_id", "order_date", "hour"]],
     on="order_id",
     how="left",
     validate="many_to_one"
@@ -25,7 +41,7 @@ df_order_sku = df_lines.merge(
 # 3. Aggregate demand by SKU and date
 daily_demand = (
     df_order_sku
-    .groupby(["order_date", "sku_id"], as_index=False)["quantity"]
+    .groupby(["order_date", "sku_id", "hour"], as_index=False)["quantity"]
     .sum()
     .rename(columns={"quantity": "demand"})
 )
@@ -39,23 +55,30 @@ dates = pd.date_range(
 
 # Use the master file to include all SKUs in the assortment
 sku_ids = df_sku["sku_id"].dropna().unique()
+hours = range(24)
 
 full_index = pd.MultiIndex.from_product(
-    [dates, sku_ids],
-    names=["order_date", "sku_id"]
+    [dates, sku_ids, hours],
+    names=["order_date", "sku_id", "hour"]
 )
 
 daily_demand = (
     daily_demand
-    .set_index(["order_date", "sku_id"])
+    .set_index(["order_date", "sku_id", "hour"])
     .reindex(full_index, fill_value=0)
     .reset_index()
-    .sort_values(["sku_id", "order_date"])
+    .sort_values(["sku_id", "order_date", "hour"])
 )
 
 # 5. Product-level descriptive statistics
+daily_totals = (
+    daily_demand
+    .groupby(["order_date", "sku_id"], as_index=False)["demand"]
+    .sum()
+)
+
 product_stats = (
-    daily_demand.groupby("sku_id")["demand"]
+    daily_totals.groupby("sku_id")["demand"]
     .agg(
         mean_daily="mean",
         std_daily="std",
@@ -73,6 +96,8 @@ product_stats["cv"] = (
 daily_demand["weekday"] = daily_demand["order_date"].dt.dayofweek
 daily_demand["month"] = daily_demand["order_date"].dt.month
 daily_demand["year"] = daily_demand["order_date"].dt.year
+
+
 
 # 7. Average demand by weekday, for each SKU
 df_days = (
@@ -115,15 +140,7 @@ weekday_seasonality["relative_demand"] = (
 
 weekday_seasonality["weekday_name"] = (
     weekday_seasonality["weekday"]
-    .map({
-        0: "Monday",
-        1: "Tuesday",
-        2: "Wednesday",
-        3: "Thursday",
-        4: "Friday",
-        5: "Saturday",
-        6: "Sunday"
-    })
+    .map(weekday_names)
 )
 
 print(weekday_seasonality)
@@ -160,3 +177,197 @@ monthly_seasonality["month_name"] = (
 )
 
 print(monthly_seasonality)
+
+
+# trend over time
+
+daily_demand["quarter"] = (
+    daily_demand["order_date"].dt.to_period("Q").astype(str)
+)
+
+df_quarter = (
+    daily_demand.groupby(["sku_id", "quarter"])["demand"]
+    .mean()
+    .reset_index(name="mean_demand")
+)
+
+print(df_quarter)
+
+# analyze orders by day of week and time of day; identify peak days and periods.
+# no sku, just time analysis
+
+print(daily_demand.head())
+
+demand_per_day = (
+    daily_demand
+    .groupby(["weekday"], as_index=False)["demand"]
+    .sum()
+)
+
+
+demand_per_hour = (
+    daily_demand
+    .groupby(["hour"], as_index=False)["demand"]
+    .sum()
+)
+
+
+max_demand_day = demand_per_day.loc[demand_per_day["demand"].idxmax()]
+max_demand_hour = demand_per_hour.loc[demand_per_hour["demand"].idxmax()]
+
+print(f"Peak demand day: {max_demand_day['weekday']} with demand {max_demand_day['demand']}")
+print(f"Peak demand hour: {max_demand_hour['hour']} with demand {max_demand_hour['demand']}")
+
+
+# peak analysis
+
+df_order["weekday_name"] = df_order["weekday"].map(weekday_names)
+
+daily_orders = (
+    df_order.groupby(["placement_timestamp"])
+    .size()
+)
+
+orders_by_date = df_order.assign(
+    order_date=df_order["placement_timestamp"].dt.normalize()
+)
+
+daily_counts = (
+    orders_by_date.groupby(["order_date", "weekday", "weekday_name"])
+    .size()
+    .reset_index(name="orders")
+)
+
+peak_days = (
+    daily_counts.groupby(["weekday", "weekday_name"])["orders"]
+    .agg(["mean", "median", "max"])
+    .reset_index()
+    .sort_values("weekday")
+)
+
+print(peak_days)
+
+peak_days.plot(
+    x="weekday_name",
+    y="mean",
+    kind="bar",
+    legend=False,
+    xlabel="Day of week",
+    ylabel="Average orders per day",
+    title="Average Daily Orders by Weekday"
+)
+plt.tight_layout()
+plt.show()
+
+
+hourly_counts = (
+    df_order.groupby(["order_date", "hour"])
+    .size()
+    .reset_index(name="orders")
+)
+
+peak_hours = (
+    hourly_counts.groupby("hour")["orders"]
+    .mean()
+    .reindex(range(24), fill_value=0)
+    .reset_index(name="mean_orders")
+)
+
+print(peak_hours.sort_values("mean_orders", ascending=False))
+
+peak_hours.plot(
+    x="hour",
+    y="mean_orders",
+    kind="bar",
+    legend=False,
+    xlabel="Hour of day",
+    ylabel="Average orders per hour",
+    title="Average Hourly Order Volume"
+)
+plt.tight_layout()
+plt.show()
+
+df_order["period"] = pd.cut(
+    df_order["hour"],
+    bins=[-1, 5, 11, 17, 23],
+    labels=["Night (00–05)", "Morning (06–11)",
+            "Afternoon (12–17)", "Evening (18–23)"]
+)
+
+period_counts = (
+    df_order.groupby(
+        ["order_date", "period"], observed=False
+    )
+    .size()
+    .reset_index(name="orders")
+)
+
+peak_periods = (
+    period_counts.groupby("period", observed=False)["orders"]
+    .agg(["mean", "median", "max"])
+    .reset_index()
+)
+
+print(peak_periods)
+
+weekday_hour = (
+    df_order.groupby(["weekday_name", "hour"])
+    .size()
+    .reset_index(name="total_orders")
+)
+
+# Average orders per hour for each weekday,
+# accounting for how many dates of each weekday are observed
+dates_per_weekday = (
+    df_order[["order_date", "weekday_name"]]
+    .drop_duplicates()
+    .groupby("weekday_name")
+    .size()
+)
+
+weekday_hour["mean_orders_per_hour"] = (
+    weekday_hour["total_orders"]
+    / weekday_hour["weekday_name"].map(dates_per_weekday)
+)
+
+print(
+    weekday_hour.sort_values(
+        "mean_orders_per_hour", ascending=False
+    ).head(10)
+)
+
+# basket-size distributions
+
+basket_stats = df_order["basket_size_units"].describe(
+    percentiles=[0.25, 0.50, 0.75, 0.90, 0.99]
+)
+
+print(basket_stats)
+
+basket_distribution = (
+    df_order["basket_size_units"]
+    .value_counts()
+    .sort_index()
+    .rename_axis("basket_size_units")
+    .reset_index(name="number_of_orders")
+)
+
+basket_distribution["percentage"] = (
+    basket_distribution["number_of_orders"]
+    / len(df_order) * 100
+)
+
+print(basket_distribution)
+
+basket_distribution.plot(
+    x="basket_size_units",
+    y="percentage",
+    kind="bar",
+    legend=False,
+    xlabel="Number of units per basket",
+    ylabel="Orders (%)",
+    title="Distribution of Basket Sizes"
+)
+
+plt.tight_layout()
+plt.show()
