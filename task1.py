@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from itertools import combinations
 
 # dictionaries
 
@@ -371,3 +372,64 @@ basket_distribution.plot(
 
 plt.tight_layout()
 plt.show()
+
+# products ordered together 
+
+basket_skus = (
+    df_lines.groupby("order_id")["sku_id"]
+    .apply(lambda x: sorted(set(x.dropna())))
+)
+
+n_orders = df_lines["order_id"].nunique()
+
+pair_counts = {}
+
+for skus in basket_skus:
+    for sku_a, sku_b in combinations(skus, 2):
+        pair_counts[(sku_a, sku_b)] = (pair_counts.get((sku_a, sku_b), 0) + 1)
+
+frequent_pairs = pd.DataFrame(
+    [
+        {
+            "sku_a": pair[0],
+            "sku_b": pair[1],
+            "orders_together": count,
+            "perc of orders together over total orders": 100 * count / n_orders
+        }
+        for pair, count in pair_counts.items()
+    ]
+)
+
+frequent_pairs = frequent_pairs.sort_values("orders_together", ascending=False)
+
+# print(frequent_pairs.head(20))
+
+sku_order_counts = (
+    df_lines.groupby("sku_id")["order_id"]
+    .nunique()
+)
+
+frequent_pairs["support"] = (
+    frequent_pairs["orders_together"] / n_orders
+)
+
+frequent_pairs["confidence_a_to_b"] = (
+    frequent_pairs["orders_together"]
+    / frequent_pairs["sku_a"].map(sku_order_counts)
+)
+
+frequent_pairs["confidence_b_to_a"] = (
+    frequent_pairs["orders_together"]
+    / frequent_pairs["sku_b"].map(sku_order_counts)
+)
+
+frequent_pairs["lift"] = (
+    frequent_pairs["orders_together"] * n_orders
+    / (
+        frequent_pairs["sku_a"].map(sku_order_counts)
+        * frequent_pairs["sku_b"].map(sku_order_counts)
+    )
+)
+
+results = frequent_pairs.sort_values("lift", ascending=False).head(20)
+print(results)
