@@ -38,7 +38,18 @@ df_order_sku = df_lines.merge(
     how="left",
     validate="many_to_one"
 )
-
+# # 3–4 (revised). Daily demand per SKU, every date × every SKU, zeros filled
+# dates = pd.date_range(df_order["order_date"].min(),
+#                       df_order["order_date"].max(), freq="D")
+# sku_ids = df_sku["sku_id"].dropna().unique()
+#
+# daily_totals = (
+#     df_order_sku.groupby(["order_date", "sku_id"])["quantity"].sum()
+#     .reindex(pd.MultiIndex.from_product([dates, sku_ids],
+#              names=["order_date", "sku_id"]), fill_value=0)
+#     .rename("demand").reset_index()
+# )
+#This code gives demand per day rather than per hour, because stock replenishment happens overnight and it also reduces the number of row entries to around 750,000 as opposed to that times 24. Code would process faster. Also takes care of the broken timestamp issue. (after day 56, every order is stamped in at midnight so thats a bug that this code surpasses)
 # 3. Aggregate demand by SKU and date
 daily_demand = (
     df_order_sku
